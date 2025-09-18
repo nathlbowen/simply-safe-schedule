@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CSV Data Cleaner API - No Pandas Version
-Simple CSV processing without pandas dependency
+CSV Data Cleaner API - Updated for Client Task Report format
+Handles the new CSV structure with client_first_name, client_last_name, etc.
 """
 
 from flask import Flask, request, jsonify
@@ -13,7 +13,7 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
 def clean_csv_data(csv_content):
-    """Clean staff task report data using built-in csv module"""
+    """Clean client task report data using built-in csv module"""
     
     # Parse CSV
     csv_reader = csv.DictReader(io.StringIO(csv_content))
@@ -22,11 +22,10 @@ def clean_csv_data(csv_content):
     if not rows:
         raise ValueError("No data found in CSV")
     
-    # Check required columns
-    required = ['client_id', 'title', 'first_name', 'last_name', 'address_1', 
-               'address_2', 'town', 'postcode', 'employee_id', 'first_name_1', 
-               'last_name_1', 'start_date', 'start_time', 'end_date', 'end_time', 
-               'week_number', 'client_type_text']
+    # Check required columns for the new format
+    required = ['client_id', 'client_first_name', 'client_last_name', 'address', 
+               'carer_name', 'task_date', 'start_time', 'end_time', 
+               'week_no', 'dayname', 'client_type']
     
     first_row = rows[0]
     missing = [col for col in required if col not in first_row]
@@ -41,37 +40,36 @@ def clean_csv_data(csv_content):
             continue
             
         # Combine client name
-        title = (row.get('title') or '').strip()
-        first_name = (row.get('first_name') or '').strip()
-        last_name = (row.get('last_name') or '').strip()
-        client_name = ' '.join([title, first_name, last_name]).strip()
+        first_name = (row.get('client_first_name') or '').strip()
+        last_name = (row.get('client_last_name') or '').strip()
+        client_name = ' '.join([first_name, last_name]).strip()
         client_name = ' '.join(client_name.split())  # Remove extra spaces
         
-        # Combine address
-        address_parts = []
-        for part in [row.get('address_1'), row.get('address_2'), row.get('town'), row.get('postcode')]:
-            if part and str(part).strip() and str(part).strip().lower() != 'nan':
-                address_parts.append(str(part).strip())
-        address = ', '.join(address_parts)
+        # Get address (already combined in this CSV)
+        address = (row.get('address') or '').strip()
         
-        # Combine staff name
-        staff_first = (row.get('first_name_1') or '').strip()
-        staff_last = (row.get('last_name_1') or '').strip()
-        staff_name = ' '.join([staff_first, staff_last]).strip()
-        staff_name = ' '.join(staff_name.split())  # Remove extra spaces
+        # Get staff/carer name
+        staff_name = (row.get('carer_name') or '').strip()
         
         cleaned_row = {
             'client_name': client_name,
             'address': address,
             'client_id': row.get('client_id'),
-            'staff_id': row.get('employee_id'),
+            'staff_id': None,  # Not available in this CSV format
             'staff_name': staff_name,
-            'start_date': row.get('start_date'),
+            'start_date': row.get('task_date'),
             'start_time': row.get('start_time'),
-            'end_date': row.get('end_date'),
+            'end_date': row.get('task_date'),  # Same as start_date for single day tasks
             'end_time': row.get('end_time'),
-            'week_number': row.get('week_number'),
-            'client_type_text': row.get('client_type_text')
+            'week_number': row.get('week_no'),
+            'day_of_week': row.get('dayname'),
+            'client_type_text': row.get('client_type'),
+            # Additional fields from the new CSV
+            'visit_time': row.get('visit_time'),
+            'charge': row.get('charge'),
+            'service_name': row.get('service_name'),
+            'completed': row.get('completed'),
+            'cancelled': row.get('cancelled')
         }
         
         cleaned_rows.append(cleaned_row)
@@ -81,9 +79,10 @@ def clean_csv_data(csv_content):
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
-        "service": "CSV Data Cleaner API",
+        "service": "CSV Data Cleaner API - Client Task Report",
         "status": "running",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "supported_format": "Client Task Report CSV",
         "endpoints": {
             "POST /clean": "Upload CSV file or send as JSON"
         }
@@ -120,7 +119,12 @@ def clean_data():
         
         # Calculate stats
         unique_clients = len(set(row['client_id'] for row in cleaned_data if row['client_id']))
-        unique_staff = len(set(row['staff_id'] for row in cleaned_data if row['staff_id']))
+        unique_staff = len(set(row['staff_name'] for row in cleaned_data if row['staff_name']))
+        
+        # Additional stats for the new format
+        total_visits = len(cleaned_data)
+        completed_visits = len([row for row in cleaned_data if row.get('completed') == 'Y'])
+        cancelled_visits = len([row for row in cleaned_data if row.get('cancelled') == 'Y'])
         
         # Return results
         return jsonify({
@@ -128,10 +132,13 @@ def clean_data():
             "original_rows": len(original_rows),
             "cleaned_rows": len(cleaned_data),
             "original_columns": original_columns,
-            "cleaned_columns": 11,
+            "cleaned_columns": len(cleaned_data[0].keys()) if cleaned_data else 0,
             "summary": {
                 "unique_clients": unique_clients,
-                "unique_staff": unique_staff
+                "unique_staff": unique_staff,
+                "total_visits": total_visits,
+                "completed_visits": completed_visits,
+                "cancelled_visits": cancelled_visits
             },
             "data": cleaned_data
         })
