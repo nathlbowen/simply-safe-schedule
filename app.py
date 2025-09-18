@@ -38,11 +38,14 @@ def clean_csv_data(csv_content):
     
     for row in rows:
         # Skip rows with missing essential data
-        if not row.get('client_id') or not row.get('employee_id'):
+        client_id_val = row.get('client_id', '').strip()
+        employee_id_val = row.get('employee_id', '').strip()
+        
+        if not client_id_val or not employee_id_val:
             continue
         
-        # Skip if employee_id is -2 (uncovered visits)
-        if str(row.get('employee_id', '')).strip() == '-2':
+        # Skip if employee_id is -2 (uncovered visits) or empty
+        if employee_id_val in ['-2', '']:
             continue
             
         # Combine client name from title, first_name, last_name
@@ -78,17 +81,17 @@ def clean_csv_data(csv_content):
         
         # Create the cleaned row in Supabase format
         cleaned_row = {
-            'staff_id': int(row.get('employee_id', 0)),
+            'staff_id': int(row.get('employee_id', 0)) if row.get('employee_id', '').strip() else 0,
             'staff_name': None,  # Not available, will need lookup from Airtable
             'start_date': start_date_formatted,
             'day_of_week': day_of_week,
             'start_time': row.get('start_time', ''),
             'end_time': row.get('end_time', ''),
-            'client_id': int(row.get('client_id', 0)),
+            'client_id': int(row.get('client_id', 0)) if row.get('client_id', '').strip() else 0,
             'client_name': client_name,
             'address': address,
             'client_type_text': row.get('client_type_text', ''),
-            'week_number': int(row.get('week_number', 0))
+            'week_number': int(row.get('week_number', 0)) if row.get('week_number', '').strip() else 0
         }
         
         cleaned_rows.append(cleaned_row)
