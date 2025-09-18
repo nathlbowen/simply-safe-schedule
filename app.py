@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-CSV Data Cleaner API - Final Correct Version
-Simple field mapping for FinalSSCG.csv to Supabase format
+CSV Data Cleaner API - For Current Rota CSV Format
+Maps current CSV (rota_id, carer_id, employee_id) to Supabase format
 """
 
 from flask import Flask, request, jsonify
 import csv
 import io
 import os
+from datetime import datetime
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
 def clean_csv_data(csv_content):
-    """Clean FinalSSCG CSV data - simple field mapping"""
+    """Clean current rota CSV format and map to Supabase structure"""
     
     # Parse CSV
     csv_reader = csv.DictReader(io.StringIO(csv_content))
@@ -22,10 +23,10 @@ def clean_csv_data(csv_content):
     if not rows:
         raise ValueError("No data found in CSV")
     
-    # Check for FinalSSCG format
-    required = ['client_id', 'client_first_name', 'client_last_name', 'client_type', 
-               'address', 'week_no', 'dayname', 'task_date', 'start_time', 'end_time',
-               'staff_ID', 'staff_name']
+    # Check for current format - these are the columns we actually have
+    required = ['client_id', 'title', 'first_name', 'last_name', 'address_1', 
+               'address_2', 'town', 'postcode', 'employee_id', 'start_date', 
+               'start_time', 'end_date', 'end_time', 'week_number', 'client_type_text']
     
     first_row = rows[0]
     missing = [col for col in required if col not in first_row]
@@ -37,42 +38,57 @@ def clean_csv_data(csv_content):
     
     for row in rows:
         # Skip rows with missing essential data
-        if not row.get('client_id') or not row.get('staff_ID'):
+        if not row.get('client_id') or not row.get('employee_id'):
+            continue
+        
+        # Skip if employee_id is -2 (uncovered visits)
+        if str(row.get('employee_id', '')).strip() == '-2':
             continue
             
-        # Combine client name (first_name + last_name)
-        first_name = (row.get('client_first_name') or '').strip()
-        last_name = (row.get('client_last_name') or '').strip()
+        # Combine client name from title, first_name, last_name
+        title = (row.get('title') or '').strip()
+        first_name = (row.get('first_name') or '').strip()
+        last_name = (row.get('last_name') or '').strip()
+        
+        # Remove title from client name (these are client titles, not staff)
         client_name = f"{first_name} {last_name}".strip()
         
-        # Get staff name (remove any titles if present)
-        staff_name = (row.get('staff_name') or '').strip()
-        titles = ['Miss', 'Ms', 'Mr', 'Mrs', 'Dr', 'Prof']
-        for title in titles:
-            if staff_name.startswith(title + ' '):
-                staff_name = staff_name[len(title):].strip()
+        # Combine address from components
+        address_parts = []
+        for part in [row.get('address_1'), row.get('address_2'), row.get('town'), row.get('postcode')]:
+            if part and str(part).strip() and str(part).strip().lower() not in ['nan', '']:
+                address_parts.append(str(part).strip())
+        address = ', '.join(address_parts)
         
-        # Convert date format from DD/MM/YYYY to YYYY-MM-DD for Supabase
-        start_date = row.get('task_date', '')
-        if '/' in start_date:
+        # Calculate day of week from start_date
+        day_of_week = None
+        start_date_formatted = row.get('start_date', '')
+        
+        if start_date_formatted:
             try:
-                day, month, year = start_date.split('/')
-                start_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                # Convert DD/MM/YYYY to YYYY-MM-DD and calculate day of week
+                if '/' in start_date_formatted:
+                    day, month, year = start_date_formatted.split('/')
+                    date_obj = datetime(int(year), int(month), int(day))
+                    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+                    day_of_week = days[date_obj.weekday()]
+                    start_date_formatted = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
             except:
-                pass  # Keep original if conversion fails
+                pass
         
+        # Create the cleaned row in Supabase format
         cleaned_row = {
-            'staff_id': int(float(row.get('staff_ID', 0))),  # Convert float to int
-            'staff_name': staff_name,
-            'start_date': start_date,
-            'day_of_week': row.get('dayname', ''),
+            'staff_id': int(row.get('employee_id', 0)),
+            'staff_name': None,  # Not available, will need lookup from Airtable
+            'start_date': start_date_formatted,
+            'day_of_week': day_of_week,
             'start_time': row.get('start_time', ''),
             'end_time': row.get('end_time', ''),
             'client_id': int(row.get('client_id', 0)),
             'client_name': client_name,
-            'address': row.get('address', ''),
-            'client_type_text': row.get('client_type', ''),
-            'week_number': int(row.get('week_no', 0))
+            'address': address,
+            'client_type_text': row.get('client_type_text', ''),
+            'week_number': int(row.get('week_number', 0))
         }
         
         cleaned_rows.append(cleaned_row)
@@ -82,11 +98,12 @@ def clean_csv_data(csv_content):
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
-        "service": "SSCG CSV Cleaner API",
+        "service": "SSCG CSV Cleaner API - Current Format",
         "status": "running",
-        "version": "4.0.0",
-        "expected_format": "FinalSSCG.csv",
+        "version": "5.0.0",
+        "input_format": "Current rota CSV (rota_id, carer_id, employee_id)",
         "output_format": "Supabase staff_schedules table",
+        "note": "Filters out uncovered visits (employee_id = -2)",
         "endpoints": {
             "POST /clean": "Upload CSV file or send as JSON"
         }
@@ -125,18 +142,19 @@ def clean_data():
         unique_clients = len(set(row['client_id'] for row in cleaned_data if row['client_id']))
         unique_staff = len(set(row['staff_id'] for row in cleaned_data if row['staff_id']))
         
-        # Return results in format ready for Supabase
+        # Return results
         return jsonify({
             "status": "success",
-            "format": "FinalSSCG.csv processed",
+            "format": "Current rota CSV processed",
             "original_rows": len(original_rows),
             "cleaned_rows": len(cleaned_data),
+            "filtered_out": len(original_rows) - len(cleaned_data),
             "original_columns": original_columns,
-            "cleaned_columns": 11,  # Fixed number for Supabase table
+            "cleaned_columns": 11,
             "summary": {
                 "unique_clients": unique_clients,
                 "unique_staff": unique_staff,
-                "date_range": f"{min(row['start_date'] for row in cleaned_data if row['start_date'])} to {max(row['start_date'] for row in cleaned_data if row['start_date'])}" if cleaned_data else "No dates"
+                "needs_staff_lookup": "Yes - staff_name is null, requires Airtable lookup"
             },
             "data": cleaned_data
         })
