@@ -14,7 +14,7 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
 
 def clean_csv_data(csv_content):
-    """Clean current CSV format and map to Supabase structure"""
+    """Clean Client Task Report CSV format and map to Supabase structure"""
     
     # Parse CSV
     csv_reader = csv.DictReader(io.StringIO(csv_content))
@@ -23,103 +23,70 @@ def clean_csv_data(csv_content):
     if not rows:
         raise ValueError("No data found in CSV")
     
-    # Check for essential columns - be flexible about client name columns  
-    essential = ['client_id', 'employee_id', 'start_date', 'start_time', 'end_date', 'end_time', 'week_number']
+    # Check for Client Task Report format columns
+    required = ['client_id', 'client_first_name', 'client_last_name', 'carer_name', 
+               'task_date', 'start_time', 'end_time', 'week_no', 'dayname', 'address']
     
     first_row = rows[0]
-    missing_essential = [col for col in essential if col not in first_row]
-    if missing_essential:
+    missing = [col for col in required if col not in first_row]
+    if missing:
         available = list(first_row.keys())
-        raise ValueError(f"Missing essential columns: {missing_essential}. Available: {available}")
-    
-    # Check what client name columns are available
-    has_separate_client_names = 'client_first_name' in first_row and 'client_last_name' in first_row
-    has_combined_client_name = 'client_name' in first_row  
-    has_generic_names = 'first_name' in first_row and 'last_name' in first_row
+        raise ValueError(f"Missing columns: {missing}. Available: {available}")
     
     cleaned_rows = []
     
     for row in rows:
         # Skip rows with missing essential data
         client_id_val = row.get('client_id', '').strip()
-        employee_id_val = row.get('employee_id', '').strip()
+        carer_name_val = row.get('carer_name', '').strip()
         
-        if not client_id_val or not employee_id_val:
+        if not client_id_val or not carer_name_val:
             continue
         
-        # Skip if employee_id is -2 (uncovered visits) or empty
-        if employee_id_val in ['-2', '']:
+        # Skip cancelled visits
+        if row.get('cancelled', '').upper() == 'Y':
             continue
             
-        # Try to find client name columns - check for various possible names
-        client_name = ""
+        # Combine client name from separate fields
+        client_first = (row.get('client_first_name') or '').strip()
+        client_last = (row.get('client_last_name') or '').strip()
+        client_name = f"{client_first} {client_last}".strip()
         
-        # Option 1: Check for separate client name columns
-        if 'client_first_name' in row and 'client_last_name' in row:
-            client_first = (row.get('client_first_name') or '').strip()
-            client_last = (row.get('client_last_name') or '').strip()
-            client_name = f"{client_first} {client_last}".strip()
-            
-        # Option 2: Check for combined client_name column
-        elif 'client_name' in row:
-            client_name = (row.get('client_name') or '').strip()
-            
-        # Option 3: Use title, first_name, last_name (assuming these are client details)
-        else:
-            title = (row.get('title') or '').strip()
-            first_name = (row.get('first_name') or '').strip()
-            last_name = (row.get('last_name') or '').strip()
-            
-            # Remove title prefixes from client name
-            titles_to_remove = ['MR', 'MRS', 'MS', 'MISS', 'DR', 'Mr', 'Mrs', 'Ms', 'Miss', 'Dr']
-            if title in titles_to_remove:
-                client_name = f"{first_name} {last_name}".strip()
-            else:
-                client_name = f"{title} {first_name} {last_name}".strip()
+        # Clean staff name (remove extra spaces)
+        staff_name = ' '.join(carer_name_val.split())
         
-        # Combine address from components
-        address_parts = []
-        for part in [row.get('address_1'), row.get('address_2'), row.get('town'), row.get('postcode')]:
-            if part and str(part).strip() and str(part).strip().lower() not in ['nan', '']:
-                address_parts.append(str(part).strip())
-        address = ', '.join(address_parts)
+        # Get address (already combined in this format)
+        address = (row.get('address') or '').strip()
         
-        # Calculate day of week from start_date
-        day_of_week = None
-        start_date_formatted = row.get('start_date', '')
+        # Get day of week (already provided)
+        day_of_week = (row.get('dayname') or '').strip()
         
-        if start_date_formatted:
+        # Convert date from DD/MM/YYYY to YYYY-MM-DD
+        task_date = row.get('task_date', '').strip()
+        start_date_formatted = task_date
+        
+        if task_date and '/' in task_date:
             try:
-                # Convert DD/MM/YYYY to YYYY-MM-DD and calculate day of week
-                if '/' in start_date_formatted:
-                    day, month, year = start_date_formatted.split('/')
-                    date_obj = datetime(int(year), int(month), int(day))
-                    days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-                    day_of_week = days[date_obj.weekday()]
-                    start_date_formatted = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                day, month, year = task_date.split('/')
+                start_date_formatted = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
             except:
                 pass
         
         # Convert values safely
-        try:
-            staff_id = int(employee_id_val) if employee_id_val.strip() else 0
-        except:
-            staff_id = 0
-            
         try:
             client_id_int = int(client_id_val) if client_id_val.strip() else 0
         except:
             client_id_int = 0
             
         try:
-            week_num = int(row.get('week_number', 0)) if row.get('week_number', '').strip() else 0
+            week_num = int(row.get('week_no', 0)) if row.get('week_no', '').strip() else 0
         except:
             week_num = 0
         
         # Create the cleaned row in Supabase format
         cleaned_row = {
-            'staff_id': staff_id,
-            'staff_name': None,  # Not available, will need lookup from Airtable
+            'staff_id': None,  # Not available - will need Airtable lookup by staff_name
+            'staff_name': staff_name,
             'start_date': start_date_formatted,
             'day_of_week': day_of_week,
             'start_time': row.get('start_time', ''),
@@ -127,7 +94,7 @@ def clean_csv_data(csv_content):
             'client_id': client_id_int,
             'client_name': client_name,
             'address': address,
-            'client_type_text': row.get('client_type_text', ''),
+            'client_type_text': row.get('client_type', ''),
             'week_number': week_num
         }
         
